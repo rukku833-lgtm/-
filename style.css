@@ -164,7 +164,7 @@ h1 {
     margin-bottom: 0.8rem;
 }
 
-/* ビートインジケーター（拍ごとのカード） */
+/* ビートインジケーター */
 .beat-container {
     display: flex;
     justify-content: center;
@@ -242,7 +242,6 @@ h1 {
     transform: scale(1.05);
 }
 
-/* 拍ごとの個別音符セレクトボタン */
 .beat-subdiv-select {
     font-size: 0.75rem;
     font-weight: bold;
@@ -255,11 +254,7 @@ h1 {
     outline: none;
 }
 
-.beat-subdiv-select:focus {
-    border-color: #3498db;
-}
-
-/* テンポコントロール */
+/* テンポコントロール（ドラッグ対応デザイン） */
 .tempo-control {
     display: flex;
     align-items: center;
@@ -292,42 +287,47 @@ h1 {
     align-items: center;
 }
 
-#bpmInput {
-    width: 110px;
+.bpm-display {
+    width: 140px;
     font-size: 2.8rem;
     font-weight: bold;
     text-align: center;
-    border: 2px solid transparent;
-    border-radius: 8px;
+    border: 2px dashed #cbd5e1;
+    border-radius: 12px;
     color: #2c3e50;
     background: #f8f9fa;
-    cursor: pointer;
-    outline: none;
-    transition: border-color 0.2s, background-color 0.2s;
+    cursor: ew-resize;
+
+    /* 左右ドラッグ表示 */
+    user-select: none;
+    -webkit-user-select: none;
+    padding: 2px 0;
+    transition: border-color 0.2s, background-color 0.2s, transform 0.1s;
+
+    /* スマホドラッグ時の縦スクロールを防止 */
+    touch-action: none;
 }
 
-#bpmInput::-webkit-inner-spin-button,
-#bpmInput::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-
-#bpmInput[type="number"] {
-    -moz-appearance: textfield;
-}
-
-#bpmInput:focus {
-    background: #ffffff;
+.bpm-display:hover,
+.bpm-display.dragging {
+    background: #eef6fc;
     border-color: #3498db;
+    border-style: solid;
+}
+
+.bpm-display:active,
+.bpm-display.dragging {
+    transform: scale(1.04);
 }
 
 .bpm-unit {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     font-weight: bold;
     color: #888;
-    margin-top: 2px;
+    margin-top: 4px;
 }
 
+/* メインボタン */
 .btn-main {
     width: 100%;
     padding: 1rem;
