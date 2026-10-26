@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'metronome-v2';
+const CACHE_NAME = 'metronome-v3';
 
 const urlsToCache = [
     './',
