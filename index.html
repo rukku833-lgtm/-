@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web メトロノーム (拍別音符設定対応)</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+
+</head>
+<body>
+  <div class="metronome-card">
+    <h1>Web Metronome</h1>
+
+    <!-- 小節パターン構成エリア -->
+    <div class="sequence-section">
+      <div class="section-header">
+        <span>小節パターン構成</span>
+        <div class="header-buttons">
+          <button id="resetSeqBtn" class="btn-small btn-secondary">初期化</button>
+          <button id="addMeasureBtn" class="btn-small">+ 小節追加</button>
+        </div>
+      </div>
+      <div id="measureList" class="measure-list"></div>
+    </div>
+
+    <!-- 全拍一括 音符コントロール -->
+    <div class="global-subdivision-control">
+      <label for="globalSubdivSelect">全拍一括音符:</label>
+      <select id="globalSubdivSelect">
+        <option value="1">4分音符</option>
+        <option value="2">8分音符</option>
+        <option value="3">3連符</option>
+        <option value="4">16分音符</option>
+        <option value="5">5連符</option>
+        <option value="6">6連符</option>
+        <option value="7">7連符</option>
+        <option value="8">8連符 </option>
+      </select>
+    </div>
+
+    <!-- 現在再生中のステータス表示 -->
+    <div class="current-status">
+      <span id="currentMeasureDisplay">第 1 / 4 小節 (4/4拍子)</span>
+    </div>
+
+    <!-- ビートインジケーター（丸ボタン＋各拍の個別音符設定） -->
+    <div class="beat-container" id="beatContainer"></div>
+
+    <!-- テンポコントロール -->
+    <div class="tempo-control">
+      <button id="minusBtn" class="btn-step" aria-label="BPMを減らす">−</button>
+      <div class="bpm-input-wrapper">
+        <input type="number" id="bpmInput" value="100" min="30" max="300">
+        <span class="bpm-unit">BPM</span>
+      </div>
+      <button id="plusBtn" class="btn-step" aria-label="BPMを増やす">+</button>
+    </div>
+
+    <button id="startStopBtn" class="btn-main">START</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
