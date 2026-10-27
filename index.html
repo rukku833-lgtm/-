@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web メトロノーム</title>
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- PWA マニフェスト設定 -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#3498db">
+  
+  <!-- iOS Safari 用設定 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="メトロノーム">
+  <link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body>
+  <div class="metronome-card">
+    <h1>Web Metronome</h1>
+
+    <!-- 小節パターン構成エリア -->
+    <div class="sequence-section">
+      <div class="section-header">
+        <span>小節パターン構成</span>
+        <div class="header-buttons">
+          <button id="resetSeqBtn" class="btn-small btn-secondary">初期化</button>
+          <button id="addMeasureBtn" class="btn-small">+ 小節追加</button>
+        </div>
+      </div>
+      <div id="measureList" class="measure-list"></div>
+    </div>
+
+    <!-- 全拍一括 音符コントロール -->
+    <div class="global-subdivision-control">
+      <label for="globalSubdivSelect">全拍一括音符:</label>
+      <select id="globalSubdivSelect">
+        <option value="1">4分音符</option>
+        <option value="2">8分音符</option>
+        <option value="3">3連符</option>
+        <option value="4">16分音符</option>
+        <option value="5">5連符</option>
+        <option value="6">6連符</option>
+        <option value="7">7連符</option>
+        <option value="8">8連符</option>
+      </select>
+    </div>
+
+    <!-- 現在再生中のステータス表示 -->
+    <div class="current-status">
+      <span id="currentMeasureDisplay">第 1 / 4 小節 (4/4拍子)</span>
+    </div>
+
+    <!-- ビートインジケーター -->
+    <div class="beat-container" id="beatContainer"></div>
+
+    <!-- テンポコントロール (左右ドラッグ / ボタン操作専用) -->
+    <div class="tempo-control">
+      <button id="minusBtn" class="btn-step" aria-label="BPMを減らす">−</button>
+      
+      <div class="bpm-display-wrapper">
+        <div id="bpmDisplay" class="bpm-display" title="左右にドラッグして変更">100</div>
+        <span class="bpm-unit">BPM (左右スワイプで変更)</span>
+      </div>
+
+      <button id="plusBtn" class="btn-step" aria-label="BPMを増やす">+</button>
+    </div>
+
+    <button id="startStopBtn" class="btn-main">START</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
