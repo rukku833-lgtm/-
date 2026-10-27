@@ -1,60 +1,45 @@
 
-/* Web Audio APIのコンテキスト準備 */
-const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+'use strict';
+
+// ==========================================
+// Web Audio API
+// ==========================================
+
+const AudioContextClass =
+    window.AudioContext || window.webkitAudioContext;
+
 let audioContext = null;
 
-/* ローカルストレージのキー名 */
-const STORAGE_KEY = 'web_metronome_settings_v2';
+// ==========================================
+// 設定・定数
+// ==========================================
 
-/* デフォルト設定 */
+const STORAGE_KEY = 'web_metronome_settings_v7';
+
 const DEFAULT_TEMPO = 100;
+const MIN_TEMPO = 30;
+const MAX_TEMPO = 300;
+const DRAG_SENSITIVITY = 5;
+
+const LOOKAHEAD_MS = 25;
+const SCHEDULE_AHEAD_TIME = 0.1;
 
 const DEFAULT_SEQUENCE = [
-    { beats: 4, unit: 4, sub: [1, 1, 1, 1] },
-    { beats: 4, unit: 4, sub: [1, 1, 1, 1] },
-    { beats: 4, unit: 4, sub: [1, 1, 1, 1] },
-    { beats: 3, unit: 4, sub: [1, 1, 1] }
+    { beats: 4, unit: 4, sub: new Array(4).fill(1) }
 ];
 
-/* サブディビジョン（音符分割数）定義 */
 const SUBDIVISION_TYPES = [
     { value: 1, label: '4分' },
     { value: 2, label: '8分' },
     { value: 3, label: '3連' },
-    { value: 4, label: '16分'},
+    { value: 4, label: '16分' },
     { value: 5, label: '5連' },
     { value: 6, label: '6連' },
     { value: 7, label: '7連' },
     { value: 8, label: '8連' }
 ];
 
-/* ステート管理 */
-let tempo = DEFAULT_TEMPO;
-let sequence = JSON.parse(JSON.stringify(DEFAULT_SEQUENCE));
-let isPlaying = false;
-let currentMeasureIndex = 0;
-let currentNote = 0;
-let nextNoteTime = 0.0;
-
-const lookahead = 25.0;
-const scheduleAheadTime = 0.1;
-
-let timerID = null;
-let beatMuted = [];
-
-/* DOM要素の取得 */
-const bpmInput = document.getElementById('bpmInput');
-const minusBtn = document.getElementById('minusBtn');
-const plusBtn = document.getElementById('plusBtn');
-const startStopBtn = document.getElementById('startStopBtn');
-const measureList = document.getElementById('measureList');
-const addMeasureBtn = document.getElementById('addMeasureBtn');
-const resetSeqBtn = document.getElementById('resetSeqBtn');
-const globalSubdivSelect = document.getElementById('globalSubdivSelect');
-const beatContainer = document.getElementById('beatContainer');
-const currentMeasureDisplay = document.getElementById('currentMeasureDisplay');
-
-const timeSignatureOptions = [
+const TIME_SIGNATURE_OPTIONS = [
     { label: '4/4 拍子', beats: 4, unit: 4 },
     { label: '3/4 拍子', beats: 3, unit: 4 },
     { label: '2/4 拍子', beats: 2, unit: 4 },
@@ -64,78 +49,325 @@ const timeSignatureOptions = [
     { label: '7/8 拍子', beats: 7, unit: 8 }
 ];
 
-/* ==========================================
-   データの保存・読み込み（localStorage）
-========================================== */
+// ==========================================
+// 状態管理
+// ==========================================
+
+let tempo = DEFAULT_TEMPO;
+let sequence = structuredClone(DEFAULT_SEQUENCE);
+
+let isPlaying = false;
+
+// 表示用の小節・拍
+let currentMeasureIndex = 0;
+let currentNote = 0;
+
+// スケジューラー専用の小節・拍
+let scheduleMeasureIndex = 0;
+let scheduleNoteIndex = 0;
+
+let nextNoteTime = 0;
+let timerID = null;
+let lastRenderedMeasureIndex = -1;
+
+let beatMutedByMeasure = [];
+
+let isDraggingBpm = false;
+let startX = 0;
+let startTempo = DEFAULT_TEMPO;
+
+// ==========================================
+// DOM要素
+// ==========================================
+
+const bpmDisplay = document.getElementById('bpmDisplay');
+const minusBtn = document.getElementById('minusBtn');
+const plusBtn = document.getElementById('plusBtn');
+const startStopBtn = document.getElementById('startStopBtn');
+
+const measureList = document.getElementById('measureList');
+const addMeasureBtn = document.getElementById('addMeasureBtn');
+const resetSeqBtn = document.getElementById('resetSeqBtn');
+
+const globalSubdivSelect =
+    document.getElementById('globalSubdivSelect');
+
+const beatContainer = document.getElementById('beatContainer');
+const currentMeasureDisplay =
+    document.getElementById('currentMeasureDisplay');
+
+// ==========================================
+// 初期化
+// ==========================================
+
+function init() {
+    loadSettings();
+    normalizeSequence();
+    initializeMuteStates();
+
+    updateTempoUI();
+    renderMeasureSequenceUI();
+    renderBeatCircles(sequence[0]);
+
+    registerEvents();
+}
+
+function normalizeSequence() {
+    if (!Array.isArray(sequence) || sequence.length === 0) {
+        sequence = structuredClone(DEFAULT_SEQUENCE);
+    }
+
+    sequence = sequence.map((item) => {
+        const beats = Number(item.beats);
+        const unit = Number(item.unit);
+
+        const validBeats =
+            Number.isInteger(beats) && beats >= 1 && beats <= 32
+                ? beats
+                : 4;
+
+        const validUnit = [2, 4, 8, 16].includes(unit)
+            ? unit
+            : 4;
+
+        const sub = Array.isArray(item.sub)
+            ? Array.from({ length: validBeats }, (_, index) => {
+                const value = Number(item.sub[index]);
+
+                return SUBDIVISION_TYPES.some(
+                    option => option.value === value
+                )
+                    ? value
+                    : 1;
+            })
+            : new Array(validBeats).fill(1);
+
+        return {
+            beats: validBeats,
+            unit: validUnit,
+            sub
+        };
+    });
+
+    tempo = clampTempo(tempo);
+
+    currentMeasureIndex = Math.min(
+        currentMeasureIndex,
+        sequence.length - 1
+    );
+}
+
+function initializeMuteStates() {
+    beatMutedByMeasure = sequence.map(
+        measure => new Array(measure.beats).fill(false)
+    );
+}
+
+function clampTempo(value) {
+    return Math.max(
+        MIN_TEMPO,
+        Math.min(MAX_TEMPO, value)
+    );
+}
+
+function updateTempoUI() {
+    if (bpmDisplay) {
+        bpmDisplay.textContent = tempo;
+    }
+}
+
+// ==========================================
+// 設定の保存・読み込み
+// ==========================================
 
 function saveSettings() {
-    const data = {
-        tempo: tempo,
-        sequence: sequence
-    };
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    try {
+        localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ tempo, sequence })
+        );
+    } catch (error) {
+        console.error('設定の保存に失敗しました:', error);
+    }
 }
 
 function loadSettings() {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    try {
+        const saved = localStorage.getItem(STORAGE_KEY);
 
-    if (saved) {
-        try {
-            const data = JSON.parse(saved);
+        if (!saved) return;
 
-            if (
-                data.tempo &&
-                Array.isArray(data.sequence) &&
-                data.sequence.length > 0
-            ) {
-                tempo = data.tempo;
+        const data = JSON.parse(saved);
 
-                sequence = data.sequence.map(item => ({
-                    beats: item.beats,
-                    unit: item.unit,
-                    sub: (
-                        Array.isArray(item.sub) &&
-                        item.sub.length === item.beats
-                    )
-                        ? item.sub
-                        : new Array(item.beats).fill(1)
-                }));
-            }
-        } catch (e) {
-            console.error('設定の読み込みに失敗しました:', e);
+        if (Number.isFinite(Number(data.tempo))) {
+            tempo = clampTempo(Math.round(Number(data.tempo)));
         }
+
+        if (
+            Array.isArray(data.sequence) &&
+            data.sequence.length > 0
+        ) {
+            sequence = data.sequence;
+        }
+    } catch (error) {
+        console.error('設定の読み込みに失敗しました:', error);
+
+        tempo = DEFAULT_TEMPO;
+        sequence = structuredClone(DEFAULT_SEQUENCE);
     }
 }
 
 function resetSettings() {
-    if (confirm('小節パターンとテンポを初期状態に戻しますか？')) {
-        tempo = DEFAULT_TEMPO;
-        sequence = JSON.parse(JSON.stringify(DEFAULT_SEQUENCE));
-        currentMeasureIndex = 0;
-        currentNote = 0;
+    const confirmed = confirm(
+        '小節パターンとテンポを初期状態に戻しますか？'
+    );
 
-        saveSettings();
+    if (!confirmed) return;
 
-        bpmInput.value = tempo;
+    stopPlayback();
 
-        renderMeasureSequenceUI();
-        renderBeatCircles(sequence[currentMeasureIndex]);
+    localStorage.removeItem(STORAGE_KEY);
+
+    tempo = DEFAULT_TEMPO;
+    sequence = structuredClone(DEFAULT_SEQUENCE);
+
+    currentMeasureIndex = 0;
+    currentNote = 0;
+    scheduleMeasureIndex = 0;
+    scheduleNoteIndex = 0;
+    lastRenderedMeasureIndex = -1;
+
+    initializeMuteStates();
+
+    updateTempoUI();
+    renderMeasureSequenceUI();
+    renderBeatCircles(sequence[0]);
+    updateStatusDisplay();
+
+    saveSettings();
+}
+
+// ==========================================
+// BPM操作
+// ==========================================
+
+function setTempo(newTempo) {
+    const value = Number(newTempo);
+
+    if (!Number.isFinite(value)) return;
+
+    tempo = clampTempo(Math.round(value));
+
+    updateTempoUI();
+    saveSettings();
+}
+
+function onDragStart(clientX) {
+    isDraggingBpm = true;
+    startX = clientX;
+    startTempo = tempo;
+
+    if (bpmDisplay) {
+        bpmDisplay.classList.add('dragging');
     }
 }
 
-/* ==========================================
-   UI描画処理
-========================================== */
+function onDragMove(clientX) {
+    if (!isDraggingBpm) return;
+
+    const deltaX = clientX - startX;
+    const tempoChange = Math.round(deltaX / DRAG_SENSITIVITY);
+
+    setTempo(startTempo + tempoChange);
+}
+
+function onDragEnd() {
+    if (!isDraggingBpm) return;
+
+    isDraggingBpm = false;
+
+    if (bpmDisplay) {
+        bpmDisplay.classList.remove('dragging');
+    }
+}
+
+function registerBpmEvents() {
+    if (bpmDisplay) {
+        bpmDisplay.addEventListener('pointerdown', (event) => {
+            if (event.button !== undefined && event.button !== 0) return;
+
+            bpmDisplay.setPointerCapture(event.pointerId);
+            onDragStart(event.clientX);
+        });
+
+        bpmDisplay.addEventListener('pointermove', (event) => {
+            if (isDraggingBpm) {
+                onDragMove(event.clientX);
+            }
+        });
+
+        const handlePointerEnd = (event) => {
+            if (!isDraggingBpm) return;
+
+            try {
+                if (bpmDisplay.hasPointerCapture(event.pointerId)) {
+                    bpmDisplay.releasePointerCapture(event.pointerId);
+                }
+            } catch (error) {
+                // ポインター解放時の例外は無視
+            }
+
+            onDragEnd();
+        };
+
+        bpmDisplay.addEventListener('pointerup', handlePointerEnd);
+        bpmDisplay.addEventListener('pointercancel', handlePointerEnd);
+        bpmDisplay.addEventListener(
+            'lostpointercapture',
+            handlePointerEnd
+        );
+
+        bpmDisplay.addEventListener('wheel', (event) => {
+            event.preventDefault();
+
+            const delta =
+                event.deltaY !== 0 ? -event.deltaY : event.deltaX;
+
+            if (delta > 0) {
+                setTempo(tempo + 1);
+            } else if (delta < 0) {
+                setTempo(tempo - 1);
+            }
+        }, { passive: false });
+    }
+
+    if (minusBtn) {
+        minusBtn.addEventListener('click', () => {
+            setTempo(tempo - 1);
+        });
+    }
+
+    if (plusBtn) {
+        plusBtn.addEventListener('click', () => {
+            setTempo(tempo + 1);
+        });
+    }
+}
+
+// ==========================================
+// 小節シーケンスの描画
+// ==========================================
 
 function renderMeasureSequenceUI() {
     measureList.innerHTML = '';
 
-    sequence.forEach((item, index) => {
+    sequence.forEach((measure, index) => {
         const div = document.createElement('div');
-        div.className = `measure-item ${
-            index === currentMeasureIndex ? 'active-measure' : ''
-        }`;
+        div.className = 'measure-item';
+
+        if (index === currentMeasureIndex) {
+            div.classList.add('active-measure');
+        }
 
         const label = document.createElement('span');
         label.className = 'measure-label';
@@ -144,202 +376,242 @@ function renderMeasureSequenceUI() {
         const select = document.createElement('select');
         select.className = 'measure-select';
 
-        timeSignatureOptions.forEach(opt => {
+        TIME_SIGNATURE_OPTIONS.forEach((optionData) => {
             const option = document.createElement('option');
 
-            option.value = `${opt.beats}/${opt.unit}`;
-            option.textContent = opt.label;
+            option.value =
+                `${optionData.beats}/${optionData.unit}`;
 
-            if (opt.beats === item.beats && opt.unit === item.unit) {
-                option.selected = true;
-            }
+            option.textContent = optionData.label;
+
+            option.selected =
+                optionData.beats === measure.beats &&
+                optionData.unit === measure.unit;
 
             select.appendChild(option);
         });
 
-        select.addEventListener('change', (e) => {
-            const [b, u] = e.target.value.split('/').map(Number);
+        select.addEventListener('change', (event) => {
+            const [beats, unit] = event.target.value
+                .split('/')
+                .map(Number);
 
-            sequence[index].beats = b;
-            sequence[index].unit = u;
+            const oldMuteState = beatMutedByMeasure[index] || [];
 
-            // 拍数変更時はデフォルト4分
-            sequence[index].sub = new Array(b).fill(1);
+            sequence[index] = {
+                beats,
+                unit,
+                sub: new Array(beats).fill(1)
+            };
+
+            beatMutedByMeasure[index] =
+                Array.from(
+                    { length: beats },
+                    (_, beatIndex) =>
+                        oldMuteState[beatIndex] ?? false
+                );
 
             if (index === currentMeasureIndex) {
-                renderBeatCircles(sequence[currentMeasureIndex]);
+                currentNote = Math.min(currentNote, beats - 1);
+                scheduleNoteIndex = Math.min(
+                    scheduleNoteIndex,
+                    beats - 1
+                );
+
+                renderBeatCircles(sequence[index]);
             }
 
-            updateStatusDisplay();
+            renderMeasureSequenceUI();
             saveSettings();
         });
 
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn-delete-measure';
-        delBtn.textContent = '✕';
-        delBtn.title = '小節を削除';
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'btn-delete-measure';
+        deleteButton.textContent = '✕';
+        deleteButton.title = '小節を削除';
 
-        delBtn.addEventListener('click', () => {
+        deleteButton.addEventListener('click', () => {
             if (sequence.length <= 1) {
                 alert('最低1つの小節が必要です');
                 return;
             }
 
             sequence.splice(index, 1);
+            beatMutedByMeasure.splice(index, 1);
 
-            if (currentMeasureIndex >= sequence.length) {
-                currentMeasureIndex = 0;
+            if (currentMeasureIndex > index) {
+                currentMeasureIndex--;
+            } else if (currentMeasureIndex === index) {
+                currentMeasureIndex = Math.min(
+                    index,
+                    sequence.length - 1
+                );
+                currentNote = 0;
             }
+
+            if (scheduleMeasureIndex > index) {
+                scheduleMeasureIndex--;
+            } else if (scheduleMeasureIndex >= sequence.length) {
+                scheduleMeasureIndex = 0;
+                scheduleNoteIndex = 0;
+            }
+
+            lastRenderedMeasureIndex = -1;
 
             renderMeasureSequenceUI();
             renderBeatCircles(sequence[currentMeasureIndex]);
+            updateStatusDisplay();
+
             saveSettings();
         });
 
-        div.appendChild(label);
-        div.appendChild(select);
-        div.appendChild(delBtn);
-
+        div.append(label, select, deleteButton);
         measureList.appendChild(div);
     });
 
     updateStatusDisplay();
 }
 
-/* 拍ボタンと個別音符セレクトの動的生成 */
+// ==========================================
+// 拍ボタン・音符分割の描画
+// ==========================================
+
 function renderBeatCircles(measureData) {
     beatContainer.innerHTML = '';
 
-    const beatsCount = measureData.beats;
-    beatMuted = new Array(beatsCount).fill(false);
+    if (!measureData) return;
 
-    for (let i = 0; i < beatsCount; i++) {
-        const itemWrapper = document.createElement('div');
-        itemWrapper.className = 'beat-item';
+    const measureIndex = sequence.indexOf(measureData);
+    if (measureIndex < 0) return;
 
-        /* 拍ボタン（丸） */
-        const btn = document.createElement('button');
-        btn.className = 'beat-circle';
-        btn.dataset.beat = i;
+    const muteStates = beatMutedByMeasure[measureIndex];
 
-        const span = document.createElement('span');
-        span.className = 'beat-num';
-        span.textContent = i + 1;
+    for (let i = 0; i < measureData.beats; i++) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'beat-item';
 
-        btn.appendChild(span);
+        const button = document.createElement('button');
+        button.className = 'beat-circle';
+        button.dataset.beat = i;
+        button.type = 'button';
 
-        btn.addEventListener('click', () => {
-            beatMuted[i] = !beatMuted[i];
+        if (muteStates[i]) {
+            button.classList.add('muted');
+        }
 
-            if (beatMuted[i]) {
-                btn.classList.add('muted');
-            } else {
-                btn.classList.remove('muted');
-            }
+        const number = document.createElement('span');
+        number.className = 'beat-num';
+        number.textContent = i + 1;
+
+        button.appendChild(number);
+
+        button.addEventListener('click', () => {
+            muteStates[i] = !muteStates[i];
+            button.classList.toggle('muted', muteStates[i]);
         });
 
-        /* 拍ごとの個別音符セレクトボックス */
-        const subSelect = document.createElement('select');
-        subSelect.className = 'beat-subdiv-select';
+        const select = document.createElement('select');
+        select.className = 'beat-subdiv-select';
 
-        SUBDIVISION_TYPES.forEach(subOpt => {
+        SUBDIVISION_TYPES.forEach((subdivision) => {
             const option = document.createElement('option');
 
-            option.value = subOpt.value;
-            option.textContent = subOpt.label;
+            option.value = subdivision.value;
+            option.textContent = subdivision.label;
+            option.selected =
+                measureData.sub[i] === subdivision.value;
 
-            if (measureData.sub[i] === subOpt.value) {
-                option.selected = true;
-            }
-
-            subSelect.appendChild(option);
+            select.appendChild(option);
         });
 
-        subSelect.addEventListener('change', (e) => {
-            const val = parseInt(e.target.value, 10);
-
-            measureData.sub[i] = val;
+        select.addEventListener('change', (event) => {
+            measureData.sub[i] = Number(event.target.value);
             saveSettings();
         });
 
-        itemWrapper.appendChild(btn);
-        itemWrapper.appendChild(subSelect);
-        beatContainer.appendChild(itemWrapper);
+        wrapper.append(button, select);
+        beatContainer.appendChild(wrapper);
     }
 }
 
-/* 全拍一括で音符を変更するイベント */
-globalSubdivSelect.addEventListener('change', (e) => {
-    const val = parseInt(e.target.value, 10);
-    const currentMeasure = sequence[currentMeasureIndex];
-
-    for (let i = 0; i < currentMeasure.beats; i++) {
-        currentMeasure.sub[i] = val;
-    }
-
-    renderBeatCircles(currentMeasure);
-    saveSettings();
-});
-
 function updateStatusDisplay() {
-    const current = sequence[currentMeasureIndex] || sequence[0];
+    const measure = sequence[currentMeasureIndex] || sequence[0];
 
     currentMeasureDisplay.textContent =
         `第 ${currentMeasureIndex + 1} / ${sequence.length} 小節 ` +
-        `(${current.beats}/${current.unit}拍子)`;
+        `(${measure.beats}/${measure.unit}拍子)`;
 
     const items = measureList.querySelectorAll('.measure-item');
 
-    items.forEach((item, idx) => {
-        if (idx === currentMeasureIndex) {
-            item.classList.add('active-measure');
-        } else {
-            item.classList.remove('active-measure');
-        }
+    items.forEach((item, index) => {
+        item.classList.toggle(
+            'active-measure',
+            index === currentMeasureIndex
+        );
     });
 }
 
-let lastRenderedMeasureIndex = -1;
-
 function updateVisualBeat(measureIndex, beatNumber) {
+    if (!isPlaying || !sequence[measureIndex]) return;
+
+    currentMeasureIndex = measureIndex;
+    currentNote = beatNumber;
+
     if (lastRenderedMeasureIndex !== measureIndex) {
         lastRenderedMeasureIndex = measureIndex;
-        currentMeasureIndex = measureIndex;
 
-        renderBeatCircles(sequence[currentMeasureIndex]);
-        updateStatusDisplay();
-    } else {
-        currentMeasureIndex = measureIndex;
+        renderBeatCircles(sequence[measureIndex]);
         updateStatusDisplay();
     }
 
     const circles = beatContainer.querySelectorAll('.beat-circle');
 
     circles.forEach((circle, index) => {
-        if (index === beatNumber) {
-            circle.classList.add('active');
-        } else {
-            circle.classList.remove('active');
-        }
+        circle.classList.toggle('active', index === beatNumber);
     });
 }
 
-/* ==========================================
-   音声・タイマー制御（サブディビジョン対応）
-========================================== */
+// ==========================================
+// 音声スケジューラー
+// ==========================================
+
+function getSecondsPerBeat(measure) {
+    return (60 / tempo) * (4 / measure.unit);
+}
+
+function playClick(time, frequency, volume, duration) {
+    if (!audioContext) return;
+
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, time);
+
+    gain.gain.setValueAtTime(volume, time);
+    gain.gain.exponentialRampToValueAtTime(
+        0.001,
+        time + duration
+    );
+
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+
+    oscillator.start(time);
+    oscillator.stop(time + duration + 0.005);
+}
 
 function scheduleNote(measureIndex, beatNumber, time) {
     const measure = sequence[measureIndex];
+
+    if (!measure) return;
+
     const subCount = measure.sub[beatNumber] || 1;
 
-    // 1(4分), 2(8分), 3(3連), 4(16分)
-    const secondsPerMainBeat =
-        (60.0 / tempo) * (4.0 / measure.unit);
+    const secondsPerBeat = getSecondsPerBeat(measure);
+    const subInterval = secondsPerBeat / subCount;
 
-    const subInterval = secondsPerMainBeat / subCount;
-
-    // メイン拍の頭で丸ボタンを光らせる
-    const drawDelay = Math.max(
+    const delay = Math.max(
         0,
         (time - audioContext.currentTime) * 1000
     );
@@ -348,175 +620,210 @@ function scheduleNote(measureIndex, beatNumber, time) {
         if (isPlaying) {
             updateVisualBeat(measureIndex, beatNumber);
         }
-    }, drawDelay);
+    }, delay);
 
-    // サブビート（裏拍・分割音）も含めて予約
-    for (let s = 0; s < subCount; s++) {
-        const noteTime = time + (s * subInterval);
+    const isMuted =
+        beatMutedByMeasure[measureIndex]?.[beatNumber] ?? false;
 
-        if (!beatMuted[beatNumber]) {
-            const osc = audioContext.createOscillator();
-            const envelope = audioContext.createGain();
+    if (isMuted) return;
 
-            if (s === 0) {
-                // 表拍（1拍目＝高音1200Hz、その他＝800Hz）
-                osc.frequency.value = (beatNumber === 0) ? 1200 : 800;
-                envelope.gain.value = 1.0;
+    for (let subdivision = 0; subdivision < subCount; subdivision++) {
+        const noteTime = time + subdivision * subInterval;
 
-                envelope.gain.exponentialRampToValueAtTime(
-                    1.0,
-                    noteTime + 0.001
-                );
+        if (subdivision === 0) {
+            const isFirstBeat = beatNumber === 0;
 
-                envelope.gain.exponentialRampToValueAtTime(
-                    0.001,
-                    noteTime + 0.025
-                );
-            } else {
-                // 裏拍・分割音（600Hz、やや抑えめの音量）
-                osc.frequency.value = 600;
-                envelope.gain.value = 0.4;
-
-                envelope.gain.exponentialRampToValueAtTime(
-                    0.4,
-                    noteTime + 0.001
-                );
-
-                envelope.gain.exponentialRampToValueAtTime(
-                    0.001,
-                    noteTime + 0.015
-                );
-            }
-
-            osc.connect(envelope);
-            envelope.connect(audioContext.destination);
-
-            osc.start(noteTime);
-            osc.stop(noteTime + 0.03);
+            playClick(
+                noteTime,
+                isFirstBeat ? 1200 : 800,
+                0.7,
+                0.025
+            );
+        } else {
+            playClick(noteTime, 600, 0.3, 0.015);
         }
     }
 }
 
 function scheduler() {
+    if (!isPlaying || !audioContext || sequence.length === 0) {
+        return;
+    }
+
     while (
         nextNoteTime <
-        audioContext.currentTime + scheduleAheadTime
+        audioContext.currentTime + SCHEDULE_AHEAD_TIME
     ) {
-        const currentMeasure = sequence[currentMeasureIndex];
+        const measureIndex = scheduleMeasureIndex;
+        const noteNumber = scheduleNoteIndex;
+        const measure = sequence[measureIndex];
 
-        scheduleNote(
-            currentMeasureIndex,
-            currentNote,
-            nextNoteTime
-        );
+        if (!measure) {
+            scheduleMeasureIndex = 0;
+            scheduleNoteIndex = 0;
+            continue;
+        }
 
-        const secondsPerBeat =
-            (60.0 / tempo) * (4.0 / currentMeasure.unit);
+        scheduleNote(measureIndex, noteNumber, nextNoteTime);
 
-        nextNoteTime += secondsPerBeat;
-        currentNote++;
+        nextNoteTime += getSecondsPerBeat(measure);
 
-        if (currentNote >= currentMeasure.beats) {
-            currentNote = 0;
-            currentMeasureIndex =
-                (currentMeasureIndex + 1) % sequence.length;
+        scheduleNoteIndex++;
+
+        if (scheduleNoteIndex >= measure.beats) {
+            scheduleNoteIndex = 0;
+            scheduleMeasureIndex =
+                (scheduleMeasureIndex + 1) % sequence.length;
         }
     }
 }
 
-function setTempo(newTempo) {
-    let val = parseInt(newTempo, 10);
+// ==========================================
+// 再生・停止
+// ==========================================
 
-    if (isNaN(val)) return;
+async function startStop() {
+    if (!AudioContextClass) {
+        alert('このブラウザでは音声再生に対応していません。');
+        return;
+    }
 
-    val = Math.max(30, Math.min(300, val));
-    tempo = val;
-    bpmInput.value = tempo;
-
-    saveSettings();
-}
-
-function startStop() {
     if (!audioContext) {
         audioContext = new AudioContextClass();
     }
 
     if (audioContext.state === 'suspended') {
-        audioContext.resume();
+        await audioContext.resume();
     }
 
-    isPlaying = !isPlaying;
-
-    if (isPlaying) {
-        currentMeasureIndex = 0;
-        currentNote = 0;
-        lastRenderedMeasureIndex = -1;
-        nextNoteTime = audioContext.currentTime + 0.05;
-
-        renderBeatCircles(sequence[0]);
-        updateStatusDisplay();
-
-        timerID = setInterval(scheduler, lookahead);
-
-        startStopBtn.textContent = 'STOP';
-        startStopBtn.classList.add('running');
+    if (!isPlaying) {
+        startPlayback();
     } else {
-        clearInterval(timerID);
+        stopPlayback();
+    }
+}
 
-        const circles = beatContainer.querySelectorAll('.beat-circle');
+function startPlayback() {
+    if (sequence.length === 0) {
+        sequence = structuredClone(DEFAULT_SEQUENCE);
+        initializeMuteStates();
+    }
 
-        circles.forEach(circle => {
-            circle.classList.remove('active');
-        });
+    isPlaying = true;
 
+    currentMeasureIndex = 0;
+    currentNote = 0;
+
+    scheduleMeasureIndex = 0;
+    scheduleNoteIndex = 0;
+
+    lastRenderedMeasureIndex = -1;
+
+    nextNoteTime = audioContext.currentTime + 0.05;
+
+    renderMeasureSequenceUI();
+    renderBeatCircles(sequence[0]);
+    updateStatusDisplay();
+
+    clearInterval(timerID);
+    timerID = setInterval(scheduler, LOOKAHEAD_MS);
+
+    startStopBtn.textContent = 'STOP';
+    startStopBtn.classList.add('running');
+
+    scheduler();
+}
+
+function stopPlayback() {
+    isPlaying = false;
+
+    clearInterval(timerID);
+    timerID = null;
+
+    const circles = beatContainer.querySelectorAll('.beat-circle');
+
+    circles.forEach((circle) => {
+        circle.classList.remove('active');
+    });
+
+    if (startStopBtn) {
         startStopBtn.textContent = 'START';
         startStopBtn.classList.remove('running');
     }
 }
 
-/* イベントリスナーの登録 */
-addMeasureBtn.addEventListener('click', () => {
-    const lastMeasure = sequence[sequence.length - 1] || {
-        beats: 4,
-        unit: 4,
-        sub: [1, 1, 1, 1]
-    };
+// ==========================================
+// イベント登録
+// ==========================================
 
-    sequence.push({
-        beats: lastMeasure.beats,
-        unit: lastMeasure.unit,
-        sub: [...lastMeasure.sub]
-    });
+function registerEvents() {
+    registerBpmEvents();
 
-    renderMeasureSequenceUI();
-    saveSettings();
-});
+    if (startStopBtn) {
+        startStopBtn.addEventListener('click', () => {
+            startStop().catch((error) => {
+                console.error('再生処理に失敗しました:', error);
+                stopPlayback();
+            });
+        });
+    }
 
-if (resetSeqBtn) {
-    resetSeqBtn.addEventListener('click', resetSettings);
+    if (addMeasureBtn) {
+        addMeasureBtn.addEventListener('click', () => {
+            const lastMeasure = sequence[sequence.length - 1];
+
+            sequence.push({
+                beats: lastMeasure.beats,
+                unit: lastMeasure.unit,
+                sub: [...lastMeasure.sub]
+            });
+
+            beatMutedByMeasure.push(
+                new Array(lastMeasure.beats).fill(false)
+            );
+
+            renderMeasureSequenceUI();
+            saveSettings();
+        });
+    }
+
+    if (resetSeqBtn) {
+        resetSeqBtn.addEventListener('click', resetSettings);
+    }
+
+    if (globalSubdivSelect) {
+        globalSubdivSelect.addEventListener('change', (event) => {
+            const value = Number(event.target.value);
+            const measure = sequence[currentMeasureIndex];
+
+            if (!measure) return;
+
+            measure.sub = new Array(measure.beats).fill(value);
+
+            renderBeatCircles(measure);
+            saveSettings();
+        });
+    }
 }
 
-minusBtn.addEventListener('click', () => {
-    setTempo(tempo - 1);
-});
+// ==========================================
+// Service Worker 登録 (PWA)
+// ==========================================
 
-plusBtn.addEventListener('click', () => {
-    setTempo(tempo + 1);
-});
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+            .then(reg => {
+                console.log('Service Worker 登録成功:', reg);
+            })
+            .catch(err => {
+                console.error('Service Worker 登録失敗:', err);
+            });
+    });
+}
 
-bpmInput.addEventListener('input', (e) => {
-    setTempo(e.target.value);
-});
+// ==========================================
+// 起動
+// ==========================================
 
-bpmInput.addEventListener('blur', () => {
-    bpmInput.value = tempo;
-});
-
-startStopBtn.addEventListener('click', startStop);
-
-/* 初期描画処理 */
-loadSettings();
-bpmInput.value = tempo;
-
-renderMeasureSequenceUI();
-renderBeatCircles(sequence[0]);
+init();
