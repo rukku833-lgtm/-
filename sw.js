@@ -1,5 +1,7 @@
 
-const CACHE_NAME = 'metronome-v4';
+'use strict';
+
+const CACHE_NAME = 'metronome-v5';
 
 const urlsToCache = [
     './',
@@ -9,42 +11,56 @@ const urlsToCache = [
     './manifest.json'
 ];
 
-// インストール時に新しい Service Worker を即時適用
+// 新しいService Workerをインストール
 self.addEventListener('install', (event) => {
-    // 待機せずに即時適用
-    self.skipWaiting();
-
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(urlsToCache);
-        })
+        caches.open(CACHE_NAME)
+            .then(cache => cache.addAll(urlsToCache))
+            .then(() => self.skipWaiting())
     );
 });
 
-// アクティベート時に古いキャッシュを削除
+// 古いキャッシュを削除して新バージョンを有効化
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys()
-            .then((cacheNames) => {
-                return Promise.all(
-                    cacheNames.map((cache) => {
-                        if (cache !== CACHE_NAME) {
-                            console.log('古いキャッシュを削除:', cache);
-                            return caches.delete(cache);
-                        }
-                    })
-                );
-            })
-            // 全タブに即座に制御を適用
+            .then(cacheNames => Promise.all(
+                cacheNames
+                    .filter(name => name.startsWith('metronome-'))
+                    .filter(name => name !== CACHE_NAME)
+                    .map(name => caches.delete(name))
+            ))
             .then(() => self.clients.claim())
     );
 });
 
-// キャッシュがあればキャッシュを使用し、なければネットワークから取得
+// キャッシュを優先し、なければネットワークから取得
 self.addEventListener('fetch', (event) => {
+    if (event.request.method !== 'GET') return;
+
+    const url = new URL(event.request.url);
+
+    if (url.origin !== self.location.origin) return;
+
     event.respondWith(
-        caches.match(event.request).then((response) => {
-            return response || fetch(event.request);
-        })
+        caches.match(event.request)
+            .then(cachedResponse => {
+                if (cachedResponse) return cachedResponse;
+
+                return fetch(event.request).then(response => {
+                    if (
+                        response.ok &&
+                        response.type === 'basic'
+                    ) {
+                        const copy = response.clone();
+
+                        caches.open(CACHE_NAME).then(cache => {
+                            cache.put(event.request, copy);
+                        });
+                    }
+
+                    return response;
+                });
+            })
     );
 });
